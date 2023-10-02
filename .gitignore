@@ -4,6 +4,7 @@ LC08*/*
 LC09*/*
 .ipynb_checkpoints*
 __pycache__/*
+2023*/*
 
 # don't track any data folders
 data/*
