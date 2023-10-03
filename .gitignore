@@ -8,3 +8,4 @@ __pycache__/*
 
 # don't track any data folders
 data/*
+dataset/*
