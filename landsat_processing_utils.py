@@ -349,7 +349,8 @@ def earthpy_cropper(filenames, target_shapefile, profile, cleanup = False):
     Crops files to the bounds of the specified shapefile
     
     filenames: list of landsat images
-    target_shapefile: this should be a shapely polygon. you can get this by using .total_bounds
+    target_shapefile: this should be a shapely polygon. the image will be cropped according to the .total_bounds_ attribute
+        of the given polygon.
     profile: rasterio metadata object - used to convert the shapefile to the raster CRS
     cleanup: indicates whether the original raster files should be deleted. This will save a lot of disk space.
     
@@ -367,11 +368,11 @@ def earthpy_cropper(filenames, target_shapefile, profile, cleanup = False):
         filenames, os.path.dirname(filenames[0]), [target_shapefile], overwrite=True
     )
 
-    # do this to delete original files to save space
-    # only uncomment if you are SURE YOU WANT TO DO THIS
+    # deletes uncropped files - will only delete files in which TOA reflectance has been conducted
+    # i.e., will not delete any of the original landsat data files
     if cleanup:
         for file in filenames:
-            if "TOA" in file:
+            if "TOA" in os.path.basename(file):
                 os.remove(file)
             
     return band_paths
@@ -454,7 +455,7 @@ def process_folder(filepath, mask = None, stack = False, sun_corr = True, outdir
     # If stack, create stacked data
     # NB: THIS WILL BUG OUT IF TEMP DATA IS NOT SAME RESOLUTION AS OTHER BAND DATA
     if stack:
-        
+        print("Stacking...")
         if outdir is not None:
             out_path = os.path.join(outdir, f"{os.path.basename(filepath)}_TOA_STACKED.tif")
         else:
@@ -462,8 +463,9 @@ def process_folder(filepath, mask = None, stack = False, sun_corr = True, outdir
         
         try:
             stack, metadata = es.stack(processed_filenames, out_path = out_path)
-        except:
+        except Exception as e:
             print('Issue with stacking - attempting to stack bands 1-7 only.')
+            print(e)
             try:
                 stack, metadata = es.stack(processed_filenames[:7], out_path = out_path)
             except Exception as e:
@@ -483,7 +485,8 @@ if __name__ == "__main__":
         stack, and ignore sun elevation correction.')
 
     # add positional argument (i.e., required argument)
-    parser.add_argument('filepath')
+    parser.add_argument('filepath',
+                       help = 'Path to folder containing all Landsat bands and MTL file.')
 
     # optional flags - the name of the variable is the -- option
     parser.add_argument('-m', '--mask', help = 'Provide a shapefile that the images will be cropped to') 
