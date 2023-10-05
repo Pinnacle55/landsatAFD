@@ -157,7 +157,7 @@ def potential_fire(band, background_mask, size = 61):
     
     # this is used to get back the actual means from uniform_filter
     # weights = uniform_filter(background_array, size = size, mode = "constant")
-    weights = uniform_filter(background_array, size = size)
+    weights = uniform_filter(background_array, size = size, mode = "constant")
     
     ratio75 = band[7] / band[5]
     
@@ -169,7 +169,7 @@ def potential_fire(band, background_mask, size = 61):
         ### vectorized mean of band 7
         # mean of the 61x61 kernel, but includes 0s
         # band7_uf = uniform_filter(band7_bgmasked, size = size, mode = "constant")
-        band7_uf = uniform_filter(band7_bgmasked, size = size)
+        band7_uf = uniform_filter(band7_bgmasked, size = size, mode = "constant")
         # true mean of the 61x61 kernel, not including 0s
         # use weights > 1/size to avoid floating point errors
         band7_mean = np.where(weights > (1/size), band7_uf/weights, np.nan)
@@ -180,7 +180,7 @@ def potential_fire(band, background_mask, size = 61):
 
         ### vectorized mean of ratio75
         # ratio75_uf = uniform_filter(ratio75_bgmasked, size = size, mode = "constant")
-        ratio75_uf = uniform_filter(ratio75_bgmasked, size = size)
+        ratio75_uf = uniform_filter(ratio75_bgmasked, size = size, mode = "constant")
         ratio75_mean = np.where(weights > (1/size), ratio75_uf/weights, np.nan)
         ratio75_mean = np.nan_to_num(ratio75_mean, nan=0)
 
@@ -190,7 +190,7 @@ def potential_fire(band, background_mask, size = 61):
         band7_sq = band7_bgmasked ** 2
 
         # band7_sq_uf = uniform_filter(band7_sq, size = size, mode = "constant")
-        band7_sq_uf = uniform_filter(band7_sq, size = size)
+        band7_sq_uf = uniform_filter(band7_sq, size = size, mode = "constant")
         band7_sq_mean = np.where(weights > (1/size), band7_sq_uf/weights, np.nan)
         band7_sq_mean = np.nan_to_num(band7_sq_mean, nan=0)
 
@@ -200,7 +200,7 @@ def potential_fire(band, background_mask, size = 61):
         ratio75_sq = ratio75_bgmasked ** 2
 
         # ratio75_sq_uf = uniform_filter(ratio75_sq, size = size, mode = "constant")
-        ratio75_sq_uf = uniform_filter(ratio75_sq, size = size)
+        ratio75_sq_uf = uniform_filter(ratio75_sq, size = size, mode = "constant")
         ratio75_sq_mean = np.where(weights > (1/size), ratio75_sq_uf/weights, np.nan)
         ratio75_sq_mean = np.nan_to_num(ratio75_sq_mean, nan=0)
 
