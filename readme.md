@@ -50,3 +50,4 @@ The fire data is best presented using GIS software, is it allows for more fine t
 
 The fire detection algorithm was also applied to 2015 images from Kalimantan, Indonesia. These fires are the result of biomass burning on local farms due to the slash-and-burn agriculture practiced in this region. The smoke produced from these fires results in haze, which travels westward and severely affects the air quality in many parts of Southeast Asia. This has been an ongoing international issue for many years.
 
+![alt_text](https://github.com/Pinnacle55/landsatAFD/blob/f4e8fdb10e90ce85381b4d8a3393ecaa3ad4848a/Images/AFD_GIS_kalimantan.png)
