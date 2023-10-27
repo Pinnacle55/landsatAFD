@@ -1,25 +1,26 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[30]:
+# In[5]:
 
 
-### Attempt to create a TOA_reflectance_stacker with the appropriate arguments and flags
-import argparse
 from glob import glob
-import os, sys
-import rasterio as rio
+import os
 import numpy as np
-import earthpy.spatial as es
+import rioxarray as rxr
+import xarray as xr
 import geopandas as gpd
 from shapely.geometry import box
+import earthpy.spatial as es
 from tqdm import tqdm
+import argparse
 
 
 # In[ ]:
 
 
-### Additional utils
+### Additional utils - may have to update to use rxr workflow
+# https://corteva.github.io/rioxarray/html/examples/resampling.html <- resampling with rxr
 
 def histogram_stretch(img, min_vals = None, max_vals = 99):
     """
@@ -239,10 +240,8 @@ def run_qa_parser(qa_raster, func):
     return cl_mask.squeeze()
 
 
-# In[39]:
+# In[3]:
 
-
-### TOA Processing Utils
 
 def parse_mtl(mtl_file):
     """
@@ -285,7 +284,7 @@ def parse_mtl(mtl_file):
 
 def toa_reflectance(raster, band_num, metadata, sun_corr = True):
     """
-    raster: requires a 2D numpy array as read from rasterio
+    raster: requires a 2D xarray as read by rxr.open_rasterio
     NB - array should be masked since landsat uses 0 for np.nan
     
     band_num: the landsat band number associated with that raster
@@ -303,179 +302,162 @@ def toa_reflectance(raster, band_num, metadata, sun_corr = True):
         toa_ref = toa_ref / np.sin(np.deg2rad(float(metadata["IMAGE_ATTRIBUTES"]["SUN_ELEVATION"])))
     
     # Clip any values that are larger than 1 to 1
-    toa_ref[toa_ref > 1] = 1
+    # must use .where() method
+    toa_ref.where(toa_ref <= 1, 1)
+    
+    # toa_ref[toa_ref > 1] = 1 
     
     return toa_ref
 
-def resample_tif(raster_file, target_height, target_width):
+
+# In[61]:
+
+
+#### variables required: 
+## filepath - folder containing the MTL as well as the landsat images
+## mask = None - shapefile containing the masking polygons. 
+## bounds = True - Bool, whether the data should be masked by the polygon exactly or if the raster should be masked by the total 
+##          bounds of the polygon. Default uses total_bounds of polygon (results in rectangular image)
+## sun_corr = True - Bool, whether TOA should take into account sun correctoin
+## stack = True - Bool, whether a stacked raster containing the cropped, TOA corrected rasters should be created
+## outdir = None - output directory where the output files should be saved. If not specified, save in the folder where this program
+##          is located
+
+def process_folder(filepath, mask = None, bounds = True, sun_corr = True, stack = True, outdir = None):
     """
-    given a raster file and a height/width with the same aspect ratio, 
+    Processes folder containing Landsat Level 1 Products. Includes TOA, cropping and stacking.
+    Also crops the QA pixel band.       
     
-    output a masked 2D array of resampled data
+    filepath - folder containing the MTL as well as the landsat images
+    mask = None - shapefile containing the masking polygons. CRS will automatically be converted to landsat CRS
+    bounds = True - Bool, whether the data should be masked by the polygon exactly or if the raster should be masked by the total bounds of the polygon. Default uses total_bounds of polygon (results in rectangular image)
+    sun_corr = True - Bool, whether TOA should take into account sun correctoin
+    stack = True - Bool, whether a stacked raster containing the cropped, TOA corrected rasters should be created
+    outdir = None - output directory where the output files should be saved. If not specified, save in the folder where this program is located
+    
+    returns cropped and stacked raster files in the output folder
     """
-    # we need to resample the land_use geotiff because it has a 10m scale
-    with rio.open(raster_file) as dataset:
-
-        # resample data to target shape
-        data = dataset.read(
-            out_shape=(
-                dataset.count,
-                target_height, # height and width of the up/downsampled tiff - this will force the 
-                target_width  # opened landuse dataset into this shape
-            ),
-            resampling=Resampling.nearest, # nearest is good for land use, use cubicspline for DEM
-            masked = True
-        )
-
-        # scale image transform object
-        transform = dataset.transform * dataset.transform.scale(
-            (dataset.width / data.shape[-1]),
-            (dataset.height / data.shape[-2])
-        )
-
-        resampled_profile = dataset.profile
-        resampled_profile.update(transform = transform, 
-                       width = data.shape[-1], 
-                       height = data.shape[-2])
-
-    dataset.close()
     
-    # data = masked numpy array, squeeze removes any dimensions of length 1 (i.e., 3D array with only
-    # one stack will be converted into a 2D array)
-    return data.squeeze(), resampled_profile
-
-def earthpy_cropper(filenames, target_shapefile, profile, cleanup = False):
-    '''
-    Crops files to the bounds of the specified shapefile
-    
-    filenames: list of landsat images
-    target_shapefile: this should be a shapely polygon. the image will be cropped according to the .total_bounds_ attribute
-        of the given polygon.
-    profile: rasterio metadata object - used to convert the shapefile to the raster CRS
-    cleanup: indicates whether the original raster files should be deleted. This will save a lot of disk space.
-    
-    returns a list of band_paths 
-    '''
-    
-    target_shapefile = gpd.read_file(target_shapefile)
-    
-    # convert to the correct CRS
-    target_shapefile = target_shapefile.to_crs(profile['crs'].to_epsg())
-    xmin, ymin, xmax, ymax = target_shapefile.total_bounds
-    target_shapefile = box(np.floor(xmin), np.floor(ymin), np.ceil(xmax), np.ceil(ymax))
-    
-    band_paths = es.crop_all(
-        filenames, os.path.dirname(filenames[0]), [target_shapefile], overwrite=True
-    )
-
-    # deletes uncropped files - will only delete files in which TOA reflectance has been conducted
-    # i.e., will not delete any of the original landsat data files
-    if cleanup:
-        for file in filenames:
-            if "TOA" in os.path.basename(file):
-                os.remove(file)
-            
-    return band_paths
-
-def process_folder(filepath, mask = None, stack = False, sun_corr = True, outdir = None, cleanup = False):
-    '''
-    Path to the landsat folder containing the landsat images as well as the MTL.txt file.    
-    '''
     
     # identify the mtl_file
     mtl_file = glob(os.path.join(filepath, '*MTL.txt'))
-    
+
     # If no mtl_file found or more than one mtl_file found
     if len(mtl_file) != 1:
         print('No MTL file found or more than one MTL file found. Please check the folder.')
         return
-        
+
+    # Error handling if the metadata file can't be read
     try:
         metadata = parse_mtl(mtl_file[0])
     except:
         print("Metadata could not be read.")
-    
-    # Find all bands
-    filenames = [value for key, value in metadata["PRODUCT_CONTENTS"].items() if key.startswith("FILE_NAME_BAND")]
-    
+        return
+
+    # Find all bands from the MTL file (bands 1-11 + QA_pixel)
+    filenames = [value for key, value in metadata["PRODUCT_CONTENTS"].items()\
+                 if key.startswith("FILE_NAME_BAND") or key.startswith("FILE_NAME_QUALITY_L1_PIXEL")]
+
     # convert to the correct filenames
     filenames = [os.path.join(filepath, filename) for filename in filenames]
     
-    # Create an initial profile from band 1. This will be used for transformations and defaults.
-    with rio.open(filenames[0]) as src:
-        profile = src.profile
-        src.close()
-        
-    profile.update(dtype = np.float32, nodata = np.nan)
+    band_list = []
+    target_crs = es.crs_check(filenames[0])
     
-    processed_filenames = list()
-    
-    for band in tqdm(filenames):
-        
-        # get band number
-        band_num = int(band.split("B")[1].split(".")[0])
-        
+    for file in tqdm(filenames):
+        try:
+            band_num = int(file.split("B")[1].split(".")[0])
+        except:
+            band_num = 12 # encode QA_PIXEL as band 12
+
+        # print(f'Processing band {band_num}...')
+
         # Skip band 8 completely (panchromatic band)
         if band_num == 8:
             continue
-        
-        # if no output directory specified, place the TOA corrected rasters in the original folder
-        if outdir is not None:
-            out_path = os.path.join(outdir, f'{os.path.basename(band).split(".")[0]}_TOA.tif')
-        else:
-            out_path = os.path.join(filepath, f'{os.path.basename(band).split(".")[0]}_TOA.tif')
-        
-        # catch temperature bands
-        if band_num > 9:
-            processed_filenames.append(band)
-            continue
-        
-        # read original raster
-        with rio.open(band) as src:
-            raster = src.read(1, masked = True)
-            src.close()
-        
-        # perform correction
-        toa_ref = toa_reflectance(raster, band_num, metadata, sun_corr = sun_corr)
-        
-        # save corrected image (note change to dtype float32 to accommodate np.nan)
-        with rio.open(out_path, 'w', **profile) as dst:
-            dst.write(toa_ref.astype(np.float32), 1)
-            dst.close()
-        
-        # add filepaths to processed_filenames
-        processed_filenames.append(out_path)
-        
-    # Crop the data if a shapefile has been provided
-    # NB this always produces a rectangular raster based on the total_bounds_ of the given polygon
-    
-    if mask is not None:
-        processed_filenames = earthpy_cropper(processed_filenames, mask, profile, cleanup)
-    
-    # If stack, create stacked data
-    # NB: THIS WILL BUG OUT IF TEMP DATA IS NOT SAME RESOLUTION AS OTHER BAND DATA
+
+        with rxr.open_rasterio(file, masked = True) as ds:
+
+            # If mask has been specified, crop before loading
+            if mask is not None:
+                # reproject the polygon to the same CRS as the landsat image
+                polygon = gpd.read_file(mask)
+                polygon = polygon.to_crs(target_crs)
+
+                # if 
+                if bounds:
+                    xmin, ymin, xmax, ymax = polygon.total_bounds
+                    target_shapefile = box(np.floor(xmin), np.floor(ymin), np.ceil(xmax), np.ceil(ymax))
+                    ds = ds.rio.clip([target_shapefile], from_disk = True).squeeze()
+                else:
+                    ds = ds.rio.clip(polygon.geometry, from_disk = True).squeeze()
+
+            if mask:
+                savename = f'{os.path.basename(file).split(".")[0]}_TOA_crop.tif'
+            else:
+                savename = f'{os.path.basename(file).split(".")[0]}_TOA.tif'
+
+            if outdir is not None:
+                out_path = os.path.join(outdir, savename)
+            else:
+                out_path = savename
+
+            # catch qa bands and save raster
+            if band_num == 12:
+                ds = ds.rio.write_nodata(np.nan, inplace = True)
+                band_list.append(ds)
+                ds.rio.to_raster(out_path)
+                continue
+            
+            # catch temperature and save raster
+            elif band_num > 9:
+                band_list.append(ds)
+                ds.rio.to_raster(out_path)
+                continue
+
+            # Do TOA reflectance correction
+            ds = toa_reflectance(ds, band_num, metadata, sun_corr = sun_corr)
+
+            # adjust nodata value to np.nan (since 0 is used for DNs)
+            # NB: This is extremely important - if you do not explicitly state a nodata value, you won't be able to 
+            # save xr.Dataset() - raises ufunc isnan error
+            ds = ds.rio.write_nodata(np.nan, inplace = True)
+            band_list.append(ds)
+            
+            # Save raster
+            ds.rio.to_raster(out_path)
+            
+            ds.close()
+
     if stack:
-        print("Stacking...")
-        if outdir is not None:
-            out_path = os.path.join(outdir, f"{os.path.basename(filepath)}_TOA_STACKED.tif")
-        else:
-            out_path = os.path.join(filepath, f"{os.path.basename(filepath)}_TOA_STACKED.tif")
+        print('Stacking...')
         
-        try:
-            stack, metadata = es.stack(processed_filenames, out_path = out_path)
-        except Exception as e:
-            print('Issue with stacking - attempting to stack bands 1-7 only.')
-            print(e)
-            try:
-                stack, metadata = es.stack(processed_filenames[:7], out_path = out_path)
-            except Exception as e:
-                print('Issue with stacking - please see error below for more info')
-                print(e)
-                
-    print('TOA calculation complete.')
+        # Use xarray dataset to insert band names
+        
+        bands=['Coastal','Blue','Green','Red','NIR','SWIR-1','SWIR-2','Cirrus', 'TIRS-1', 'TIRS-2', 'QA_PIXEL']
+        
+        stacked_array = xr.Dataset()
+        
+        for idx, band in enumerate(bands):
+            stacked_array[band] = band_list[idx]
+            
+        # get landsat code
+        stack_name = metadata["PRODUCT_CONTENTS"]["LANDSAT_PRODUCT_ID"]
+
+        if mask:
+            stack_name = f'{stack_name}_TOA_crop_stacked.tif'
+        else:
+            stack_name = f'{stack_name}_TOA_stacked.tif'
+
+        if outdir is not None: 
+            stacked_array.rio.to_raster(os.path.join(outdir, stack_name))
+        else:
+            stacked_array.rio.to_raster(stack_name)
+            
+    print('TOA processing complete.')
 
 
-# In[38]:
+# In[ ]:
 
 
 if __name__ == "__main__":
@@ -493,10 +475,10 @@ if __name__ == "__main__":
 
     # on/off flags - action indicates what the program should do
     # if flag is called (default will be the opposite for on/off)
-    parser.add_argument('-s', '--stack', action='store_true', help = 'Create a stacked raster of the images - default False') 
-    parser.add_argument('-c', '--sun_corr', action='store_false', help = "add this flag if you DON'T want to do a sun elevation correction - default True")
+    parser.add_argument('-b', '--bounds', action='store_false', help = "Add this flag if you want to crop the raster to exact polygon geometries. Otherwise, the rasters will be cropped to the total bounds of the shapefile (default; results in rectangular raster)")
+    parser.add_argument('-s', '--stack', action='store_false', help = 'Add this flag if you DONT want to create a stacked raster of the images') 
+    parser.add_argument('-c', '--sun_corr', action='store_false', help = "Add this flag if you DON'T want to do a sun elevation correction")
     parser.add_argument('-o', '--outdir', help = "Specify an output folder to save TOA corrected images")
-    parser.add_argument('-d', '--cleanup', action='store_true', help = "If cropping, choose whether to delete the uncropped TOA images - default False")
 
 
     ### Preview arguments
@@ -510,20 +492,16 @@ if __name__ == "__main__":
                    mask = args.mask, 
                    stack = args.stack, 
                    sun_corr = args.sun_corr, 
-                   outdir = args.outdir, 
-                   cleanup = args.cleanup)
+                   outdir = args.outdir,
+                   bounds = args.bounds)
 
 
-# In[44]:
+# In[62]:
 
 
-# parser.parse_args('-m "study_area.geojson" -s -c -o "20230710_TOA" "LC08_L1TP_180035_20230710_20230718_02_T1"'.split(' '))
-
-
-# In[46]:
-
-
-
+# Speed of raster
+# %%time
+# process_folder('LC08_L1TP_180035_20230710_20230718_02_T1', outdir = 'Test Outputs', mask = 'rhodes.geojson')
 
 
 # In[ ]:
