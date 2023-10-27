@@ -20,6 +20,7 @@ import argparse
 
 
 ### Additional utils - may have to update to use rxr workflow
+# https://corteva.github.io/rioxarray/html/examples/resampling.html <- resampling with rxr
 
 def histogram_stretch(img, min_vals = None, max_vals = 99):
     """
@@ -323,6 +324,25 @@ def toa_reflectance(raster, band_num, metadata, sun_corr = True):
 ##          is located
 
 def process_folder(filepath, mask = None, bounds = True, sun_corr = True, stack = True, outdir = None):
+    """
+    Processes folder containing Landsat Level 1 Products. Includes TOA, cropping and stacking
+    
+    
+    filepath - folder containing the MTL as well as the landsat images
+    mask = None - shapefile containing the masking polygons. CRS will automatically be converted to
+            landsat CRS
+    bounds = True - Bool, whether the data should be masked by the polygon exactly or if the raster 
+            should be masked by the total bounds of the polygon. Default uses total_bounds of 
+            polygon (results in rectangular image)
+    sun_corr = True - Bool, whether TOA should take into account sun correctoin
+    stack = True - Bool, whether a stacked raster containing the cropped, TOA corrected rasters should 
+            be created
+    outdir = None - output directory where the output files should be saved. If not specified,
+            save in the folder where this program is located
+
+    """
+    
+    
     # identify the mtl_file
     mtl_file = glob(os.path.join(filepath, '*MTL.txt'))
 
@@ -399,6 +419,8 @@ def process_folder(filepath, mask = None, bounds = True, sun_corr = True, stack 
             
             # Save raster
             ds.rio.to_raster(out_path)
+            
+            ds.close()
 
     if stack:
         print('Stacking...')
